@@ -13,9 +13,12 @@ use AppBundle\Sylius\Order\OrderInterface;
 use Behat\Behat\Context\Context;
 use Behat\Behat\Context\SnippetAcceptingContext;
 use Behat\Behat\Hook\Scope\BeforeScenarioScope;
+use Behat\Behat\Hook\Scope\AfterStepScope;
 use Behat\Gherkin\Node\PyStringNode;
 use Behat\Gherkin\Node\TableNode;
+use Behat\Mink\Driver\Selenium2Driver;
 use Behat\Symfony2Extension\Context\KernelAwareContext;
+use Behat\Testwork\Tester\Result\TestResult;
 use Coduo\PHPMatcher\Factory\SimpleFactory;
 use Doctrine\Common\Persistence\ManagerRegistry;
 use Doctrine\Common\DataFixtures\Purger\ORMPurger;
@@ -175,6 +178,49 @@ class FeatureContext implements Context, SnippetAcceptingContext, KernelAwareCon
         $settingsManager->set('stripe_test_publishable_key', $stripePublishableKey);
         $settingsManager->set('stripe_test_secret_key', $stripeSecretKey);
     }
+
+    /**
+     * Grab the JavaScript errors from the session.
+     *
+     * @see https://gist.github.com/basilfx/49405f8a1642318a6c52
+     * @see https://gist.github.com/fabiang/345ca0444f19b97e370c
+     *
+     * @AfterStep
+     */
+    public function takeJSErrorsAfterFailedStep(AfterStepScope $event)
+    {
+        $code = $event->getTestResult()->getResultCode();
+        $driver = $this->getSession()->getDriver();
+
+        if ($driver instanceof Selenium2Driver /*&& $code === TestResult::FAILED*/) {
+
+            try {
+                $errors = $this->getSession()->evaluateScript('return ErrorHandler.get();');
+            } catch (\Exception $e) {
+                return;
+            }
+
+            if (is_array($errors) && count($errors) > 0) {
+
+                $messages = [];
+
+                foreach ($errors as $error) {
+                    $messages[] = sprintf(
+                        'Page "%s". Message "%s", Filename "%s", Line %s',
+                        $this->getSession()->getCurrentUrl(),
+                        is_string($error['message']) ? $error['message'] : json_encode($error['message']),
+                        $error['filename'],
+                        $error['lineno']
+                    );
+                }
+
+                printf("JavaScript errors:\n\n" . implode("\n", $messages));
+
+                // throw new \RuntimeException("JavaScript errors:\n\n" . implode("\n", $messages));
+            }
+        }
+    }
+
 
     /**
      * @Given the fixtures file :filename is loaded
@@ -706,7 +752,7 @@ class FeatureContext implements Context, SnippetAcceptingContext, KernelAwareCon
     {
         $session = $this->getSession();
 
-        $modal = $session->getPage()->waitFor(10, function($page) {
+        $modal = $session->getPage()->waitFor(30, function($page) {
             // FIXME The .modal selector is too general
             foreach ($page->findAll('css', '.modal') as $modal) {
                 if ($modal->isVisible()) {
@@ -763,10 +809,14 @@ class FeatureContext implements Context, SnippetAcceptingContext, KernelAwareCon
         foreach ($listGroups as $listGroup) {
             $optionName = $listGroup->find('css', 'input[type="radio"]')->getAttribute('name');
 
+            var_dump($optionName);
+
             $optionValues = [];
             foreach ($listGroup->findAll('css', 'input[type="radio"]') as $radio) {
                 $optionValues[] = $radio->getAttribute('value');
             }
+
+            var_dump(current($optionValues));
 
             $listGroup->selectFieldOption($optionName, current($optionValues));
         }
@@ -867,7 +917,12 @@ class FeatureContext implements Context, SnippetAcceptingContext, KernelAwareCon
 
         $button = $modal->find('css', 'form button[type="submit"]');
 
-        Assert::assertFalse($button->hasAttribute('disabled'));
+        $isNotDisabled = $button->waitFor(30, function($button) {
+
+            return !$button->hasAttribute('disabled');
+        });
+
+        Assert::assertTrue($isNotDisabled);
     }
 
     /**
